@@ -1,0 +1,163 @@
+# Life Planner Telegram Bot — Render + Supabase Version
+
+Everything lives in **`app.py`**. One Flask process (run by gunicorn), two
+real routes, storage in a free Supabase Postgres database. No separate cron
+script — your daily pinger calls the same app over HTTP.
+
+## Why Postgres instead of the original SQLite file?
+
+Render's **free** web services have an ephemeral filesystem: any local file
+is wiped on every redeploy *and* Render can restart a free instance at any
+time (not only after inactivity). A local SQLite file next to `app.py` is
+not safe there — you could lose your claimed owner, profile, and task list
+without warning. Supabase's free Postgres persists independently of the web
+service, so this version stores everything there instead.
+
+## Routes (this is the entire attack surface)
+- `GET  /` — plain health check, returns `{"ok": true}`. Point your uptime
+  pinger here — it reveals nothing sensitive.
+- `POST /webhook/<WEBHOOK_SECRET>` — Telegram delivers messages here.
+- `GET  /cron/<CRON_SECRET>` — your daily pinger hits this once a day.
+- Everything else 404s automatically. There is no web login, no HTML page,
+  no dashboard. All control happens through Telegram commands, and the
+  sensitive ones require a password stored (hashed) in the database.
+
+## Security model
+- Only one Telegram chat id can ever use this bot. The **first** person to
+  send `/claim <password>` (matching `SETUP_PASSWORD`) permanently becomes
+  the owner — recorded in the database.
+- Every message after that is checked against the owner's chat id before
+  anything else happens. Anyone else gets a flat "This bot is private." and
+  **no AI call is ever made on their behalf**.
+- Destructive/sensitive commands (`/restart`, `/setpassword`,
+  `/setprovider`, `/setmodel`, `/setkey`, `/settings`) require the current
+  password, checked as a proper salted hash (`werkzeug.security`), not a
+  plaintext comparison.
+- Change your password immediately after claiming: `/setpassword <old> <new>`
+- All secrets (bot token, webhook/cron secrets, setup password, DB
+  connection string, API keys) live in environment variables on Render, not
+  in the code. Nothing sensitive is committed to your repo.
+
+## 1. Get your credentials
+- **Telegram bot token**: `@BotFather` → `/newbot` → copy the token.
+- **OpenCode Zen API key**: `https://opencode.ai/auth` (model id `big-pickle`, free).
+- **Gemini API key** (optional, only if you want to switch providers):
+  `https://aistudio.google.com/apikey`.
+- Generate random secrets with:
+  ```bash
+  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+  Run it twice — once for `WEBHOOK_SECRET`, once for `CRON_SECRET`.
+
+## 2. Create a free Supabase Postgres database
+1. Go to `https://supabase.com`, sign up, **New project**.
+2. Pick a database password and save it somewhere — you'll need it in the
+   connection string.
+3. Once the project is ready: **Project Settings → Database → Connection
+   string**. Choose the **Transaction pooler** string (port `6543`), not the
+   direct `5432` connection — the pooler handles many short-lived
+   connections much better, which is what a Flask app on Render needs.
+4. It looks like:
+   `postgresql://postgres.xxxxxxxx:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:6543/postgres`
+   Fill in your actual password and keep this — it's your `DATABASE_URL`.
+5. Tables are created automatically by `app.py` on first run — you don't
+   need to run any SQL yourself.
+6. Note: Supabase free projects pause after **one week with no API
+   activity**. Your daily cron ping keeps it well within that, so this
+   isn't a practical concern once the bot is running.
+
+## 3. Push this project to GitHub
+Create a new repo and push `app.py`, `requirements.txt`, `Procfile`,
+`render.yaml`, and `.gitignore` (do **not** commit a real `.env` — only
+`.env.example` if you keep it).
+
+## 4. Deploy to Render (free tier)
+**Option A — Blueprint (recommended):**
+1. On Render, **New → Blueprint**, connect your GitHub repo. Render reads
+   `render.yaml` and creates the web service for you, already set to the
+   free plan with the right build/start commands.
+2. You'll be prompted to fill in the env vars marked `sync: false`:
+   - `TELEGRAM_BOT_TOKEN`
+   - `WEBHOOK_SECRET`
+   - `CRON_SECRET`
+   - `SETUP_PASSWORD`
+   - `DATABASE_URL` (from step 2)
+   - `DEFAULT_OPENCODE_API_KEY`
+   - `DEFAULT_GEMINI_API_KEY` (optional, can leave blank)
+3. Click **Apply** — Render builds and deploys.
+
+**Option B — Manual web service:**
+1. **New → Web Service**, connect your repo, runtime **Python 3**.
+2. Build command: `pip install -r requirements.txt`
+3. Start command: `gunicorn app:app --workers 1 --threads 4 --timeout 120`
+4. Instance type: **Free**.
+5. Add the same environment variables listed above under **Environment**.
+
+Either way, your app's public URL will be something like
+`https://lifeplanner-bot.onrender.com`.
+
+## 5. Point Telegram at the webhook (one-time)
+```bash
+curl -F "url=https://lifeplanner-bot.onrender.com/webhook/<WEBHOOK_SECRET>" \
+  https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook
+```
+
+## 6. Set up UptimeRobot (keeps it out of the 15-minute sleep + gives you daily cron)
+Render's free web services spin down after 15 minutes with no traffic and
+take a few seconds to wake back up on the next request (cold start). Free
+UptimeRobot monitors solve both problems at once, no card required:
+
+1. **Keep-alive monitor**: New Monitor → HTTP(s) →
+   `https://lifeplanner-bot.onrender.com/` → interval **5 minutes**. This
+   is the plain health-check route, safe to expose publicly.
+2. **Daily check-in monitor**: New Monitor → HTTP(s) →
+   `https://lifeplanner-bot.onrender.com/cron/<CRON_SECRET>` → interval
+   **1 day**, timed for whenever you want your daily message. UptimeRobot
+   lets you pick the check interval but not an exact clock time precisely;
+   if you need an exact time, use `https://cron-job.org` (also free, no
+   card) instead for this one monitor, pointed at the same URL, and keep
+   UptimeRobot just for the keep-alive ping.
+
+Sri Lanka is UTC+5:30, so a 7:00 AM Colombo check-in = **01:30 UTC**.
+
+**Cold-start risk you're accepting on the free tier:** if Render restarts
+the instance right as Telegram delivers a message or your cron pinger
+fires, that one request can be slow or occasionally dropped/retried by the
+caller. It's not silent data loss (Postgres already has your data by the
+time anything is written) — worst case is a delayed or missed single
+reply/check-in, not corruption.
+
+## 7. First run
+Message your bot on Telegram: `/claim <SETUP_PASSWORD>`. Then immediately:
+`/setpassword <SETUP_PASSWORD> <your new private password>`.
+Then just chat — the bot walks you through onboarding, saves your profile
+once you confirm the read-back, and you'll get a daily message from then on.
+
+## Bot commands
+```
+/menu                                  list commands
+/status                                profile summary + streaks
+/pause /resume                         pause or resume daily check-ins
+/restart <password>                    wipe profile, redo onboarding
+/addtask YYYY-MM-DD description        add a personal reminder
+/tasks                                 list open reminders
+/done <id>                             mark a reminder done
+/deltask <id>                          delete a reminder
+
+/setpassword <old> <new>               change the admin password
+/setprovider <password> opencode|gemini   switch AI provider live
+/setmodel <password> <model_id>        change model for current provider
+/setkey <password> <api_key>           change API key for current provider
+/settings <password>                   view current provider/model (key masked)
+```
+
+## Notes
+- All state (settings, profile, daily log, conversation scratch space,
+  scheduled tasks) lives in Supabase Postgres — nothing depends on the
+  Render instance's local disk.
+- Switching providers is live and immediate — no redeploy needed. If a
+  call to the current provider fails (bad key, wrong model name, network
+  block), you get a clear error message instead of a silent failure.
+- If you ever want to move off Render's free tier's cold starts, upgrading
+  the same service to a paid Render plan needs no code changes — Postgres
+  storage is already host-independent.

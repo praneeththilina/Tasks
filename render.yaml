@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: lifeplanner-bot
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: SETUP_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DEFAULT_OPENCODE_API_KEY
+        sync: false
+      - key: DEFAULT_GEMINI_API_KEY
+        sync: false
+      - key: DEFAULT_AI_PROVIDER
+        value: opencode
+      - key: DEFAULT_OPENCODE_MODEL
+        value: big-pickle
+      - key: DEFAULT_GEMINI_MODEL
+        value: gemini-2.5-flash
