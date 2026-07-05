@@ -330,7 +330,8 @@ def call_gemini(messages, max_tokens):
         raise RuntimeError(f"Gemini returned {resp.status_code}: {resp.text[:400]}")
     data = resp.json()
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        parts = data["candidates"][0]["content"]["parts"]
+        return "".join([p.get("text", "") for p in parts])
     except (KeyError, IndexError):
         raise RuntimeError(f"Unexpected Gemini response shape: {data}")
 
