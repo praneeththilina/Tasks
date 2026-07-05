@@ -22,9 +22,13 @@ services:
         sync: false
       - key: DEFAULT_GEMINI_API_KEY
         sync: false
+      - key: DEFAULT_GROQ_API_KEY
+        sync: false
       - key: DEFAULT_AI_PROVIDER
         value: opencode
       - key: DEFAULT_OPENCODE_MODEL
         value: big-pickle
       - key: DEFAULT_GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: DEFAULT_GROQ_MODEL
+        value: llama-3.3-70b-versatile
