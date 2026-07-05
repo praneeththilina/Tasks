@@ -1,5 +1,5 @@
 """
-Life Planner Telegram Bot — single-file Flask app (Render + Supabase edition).
+Life Planner Telegram Bot â€” single-file Flask app (Render + Supabase edition).
 ================================================================================
 
 WHAT CHANGED FROM THE PYTHONANYWHERE VERSION
@@ -8,7 +8,7 @@ WHAT CHANGED FROM THE PYTHONANYWHERE VERSION
 - Storage moved from a local SQLite file to Supabase Postgres, because
   Render's free web services have an EPHEMERAL FILESYSTEM: any local file
   (like lifeplanner.db) is wiped on every restart/redeploy, and Render can
-  restart a free instance at any time — not just after inactivity. A local
+  restart a free instance at any time â€” not just after inactivity. A local
   SQLite file is not safe to rely on there. Postgres on Supabase persists
   independently of the web service.
 - Runs under gunicorn (see Procfile / render.yaml), not `flask run`.
@@ -22,7 +22,7 @@ WHAT'S THE SAME
 - AI provider (OpenCode Zen / Gemini) is swappable at runtime via Telegram,
   password-gated, stored in the settings table.
 
-FIRST-TIME SETUP — see README.md for the full Render + Supabase walkthrough.
+FIRST-TIME SETUP â€” see README.md for the full Render + Supabase walkthrough.
 """
 
 import datetime
@@ -321,7 +321,17 @@ def call_gemini(messages, max_tokens):
         role = "model" if m["role"] == "assistant" else "user"
         contents.append({"role": role, "parts": [{"text": m["content"]}]})
 
-    payload = {"contents": contents, "generationConfig": {"maxOutputTokens": max_tokens}}
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            # Gemini 2.5 models spend part of maxOutputTokens on internal
+            # "thinking" tokens before writing the visible reply - for this
+            # bot's short structured replies that just eats the budget and
+            # truncates the actual message. Turn it off.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
     if system_parts:
         payload["system_instruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
 
@@ -330,10 +340,17 @@ def call_gemini(messages, max_tokens):
         raise RuntimeError(f"Gemini returned {resp.status_code}: {resp.text[:400]}")
     data = resp.json()
     try:
-        parts = data["candidates"][0]["content"]["parts"]
-        return "".join([p.get("text", "") for p in parts])
+        candidate = data["candidates"][0]
+        finish_reason = candidate.get("finishReason")
+        text = candidate["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
         raise RuntimeError(f"Unexpected Gemini response shape: {data}")
+
+    if finish_reason == "MAX_TOKENS":
+        # Still ran out of room - better to say so plainly than silently
+        # hand back a sentence that stops mid-word.
+        text = text.rstrip() + "\n\n[cut off - reply exceeded the token limit, try increasing max_tokens]"
+    return text
 
 
 def call_llm(messages, max_tokens=1000):
@@ -608,7 +625,7 @@ def handle_command(chat_id, text):
         if not tasks:
             send_message(chat_id, "No open scheduled tasks. Add one with /addtask YYYY-MM-DD description")
             return
-        lines = [f"#{t['id']} · {t['due_date']} · {t['description']}" for t in tasks]
+        lines = [f"#{t['id']} Â· {t['due_date']} Â· {t['description']}" for t in tasks]
         send_message(chat_id, "\n".join(lines))
 
     elif cmd == "/done":
@@ -752,7 +769,7 @@ def run_daily_checkin(chat_id):
         {"role": "user", "content": user_message},
     ]
     try:
-        reply = call_llm(messages, max_tokens=700)
+        reply = call_llm(messages, max_tokens=1000)
     except RuntimeError as e:
         print(f"[cron] LLM call failed: {e}")
         return
