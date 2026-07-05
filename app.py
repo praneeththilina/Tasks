@@ -701,7 +701,7 @@ def handle_onboarding_turn(chat_id, text):
     messages = [{"role": "system", "content": ONBOARDING_SYSTEM_PROMPT}] + history
 
     try:
-        reply = call_llm(messages, max_tokens=800)
+        reply = call_llm(messages, max_tokens=1500)
     except RuntimeError as e:
         send_message(chat_id, f"Couldn't reach the AI service ({e}). Try again shortly.")
         return
