@@ -96,23 +96,37 @@ PROVIDERS = ("opencode", "gemini", "groq")
 ADMIN_SESSION_SECONDS = 5 * 60
 
 # ============================== DATABASE (POSTGRES) =========================
-
-db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=DATABASE_URL, sslmode="require")
+#
+# IMPORTANT: gunicorn is run with --threads 4 (see Procfile/render.yaml), so
+# several requests can be inside this module at the same instant, all sharing
+# one pool object. psycopg2.pool.SimpleConnectionPool is explicitly documented
+# as NOT thread-safe — only ThreadedConnectionPool is. Under concurrent
+# button-driven traffic (the v2 menu UI fires far more overlapping requests
+# than the old command-only bot did) SimpleConnectionPool's internal
+# bookkeeping can get corrupted, which shows up as a request hanging forever
+# waiting on getconn() — exactly the "tap Admin, spinner never stops" symptom.
+# connect_timeout also makes sure a genuinely unreachable DB fails in seconds
+# instead of hanging indefinitely.
+db_pool = psycopg2.pool.ThreadedConnectionPool(
+    1, 10, dsn=DATABASE_URL, sslmode="require", connect_timeout=10
+)
 
 
 @contextmanager
 def db_cursor(commit=False):
     conn = db_pool.getconn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        yield cur
-        if commit:
-            conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield cur
+            if commit:
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
     finally:
-        cur.close()
         db_pool.putconn(conn)
 
 
@@ -470,7 +484,9 @@ def send_message(chat_id, text, reply_markup=None, parse_mode=None):
     chunks = [text[i:i + 3500] for i in range(0, len(text), 3500)] or [""]
     message_id = None
     for i, chunk in enumerate(chunks):
-        payload = {"chat_id": chat_id, "text": chunk, "parse_mode": parse_mode}
+        payload = {"chat_id": chat_id, "text": chunk}
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         if reply_markup is not None and i == len(chunks) - 1:
             payload["reply_markup"] = reply_markup
         data = _tg_post("sendMessage", payload)
@@ -480,7 +496,9 @@ def send_message(chat_id, text, reply_markup=None, parse_mode=None):
 
 
 def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode=None):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
     data = _tg_post("editMessageText", payload)
@@ -826,12 +844,22 @@ def handle_callback(cq):
     data = cq.get("data", "")
     cq_id = cq["id"]
 
-    if not is_owner(chat_id):
-        answer_callback(cq_id, "This bot is private.", alert=True)
-        return
+    try:
+        if not is_owner(chat_id):
+            answer_callback(cq_id, "This bot is private.", alert=True)
+            return
 
-    answer_callback(cq_id)  # stop the button's loading spinner immediately
+        answer_callback(cq_id)  # stop the button's loading spinner immediately
+        _dispatch_callback(chat_id, message_id, data)
+    except Exception as e:
+        # Whatever went wrong, make sure Telegram's button spinner still
+        # clears instead of spinning forever, and log it so it shows up
+        # in the Render logs.
+        print(f"[handle_callback] error handling '{data}': {e}")
+        answer_callback(cq_id, "⚠️ Something went wrong handling that — check the logs / try again.", alert=True)
 
+
+def _dispatch_callback(chat_id, message_id, data):
     if data == "menu:main":
         send_main_menu(chat_id, message_id)
 
