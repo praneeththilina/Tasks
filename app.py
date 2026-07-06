@@ -73,7 +73,7 @@ DATABASE_URL = require_env("DATABASE_URL")  # Supabase connection string
 # All three of these have free tiers — set as many as you like. The bot
 # tries them in this order: current provider first, then the others as
 # automatic fallback if a call fails.
-DEFAULT_AI_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "opencode")  # opencode|gemini|groq
+DEFAULT_AI_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "OpenCode Zen")  # opencode|gemini|groq
 
 DEFAULT_OPENCODE_MODEL = os.environ.get("DEFAULT_OPENCODE_MODEL", "big-pickle")
 DEFAULT_OPENCODE_API_KEY = os.environ.get("DEFAULT_OPENCODE_API_KEY", "")
